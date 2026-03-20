@@ -1,17 +1,18 @@
 from fastapi import FastAPI
 import joblib
-import numpy as np
-from datetime import datetime
+import pandas as pd
 
 app = FastAPI()
 
-# Load model + encoders + scaler
+# Load model
 model = joblib.load("crop_yield_model.pkl")
 scaler = joblib.load("scaler.pkl")
 
 le_crop = joblib.load("le_crop.pkl")
 le_season = joblib.load("le_season.pkl")
 le_state = joblib.load("le_state.pkl")
+
+ACRES_TO_HA = 0.404686
 
 
 @app.get("/")
@@ -22,32 +23,30 @@ def home():
 @app.post("/predict")
 def predict(data: dict):
     try:
-        # Expected input JSON
-        # {
-        #   "crop": "Cotton(lint)",
-        #   "season": "Kharif",
-        #   "state": "Maharashtra",
-        #   "area": 20,
-        #   "rainfall": 1200,
-        #   "fertilizer": 200000,
-        #   "pesticide": 1500
-        # }
-
-        # Encode categorical
-        crop = le_crop.transform([data["crop"]])[0]
+        # 🔹 Encode categorical
+        crop   = le_crop.transform([data["crop"]])[0]
         season = le_season.transform([data["season"]])[0]
-        state = le_state.transform([data["state"]])[0]
+        state  = le_state.transform([data["state"]])[0]
 
-        # Numeric inputs
-        area = data["area"]
-        rainfall = data["rainfall"]
-        fertilizer = data["fertilizer"]
-        pesticide = data["pesticide"]
+        # 🔹 Convert numeric inputs
+        area_acres = float(data["area"])
+        rainfall   = float(data["rainfall"])
+        fertilizer = float(data["fertilizer"])
+        pesticide  = float(data["pesticide"])
 
-        year = datetime.now().year  # auto current year
+        crop_year = 2026   # FIXED (same as training)
 
-        # Feature order MUST match training
-        features = np.array([[year, crop, season, state, area, rainfall, fertilizer, pesticide]])
+        # 🔥 Convert acres → hectares
+        area_ha = area_acres * ACRES_TO_HA
+
+        # 🔥 CORRECT feature order (VERY IMPORTANT)
+        features = pd.DataFrame([[
+            crop, crop_year, season, state,
+            area_ha, rainfall, fertilizer, pesticide
+        ]], columns=[
+            "crop", "crop_year", "season", "state",
+            "area", "annual_rainfall", "fertilizer", "pesticide"
+        ])
 
         # Scale
         scaled = scaler.transform(features)
@@ -55,19 +54,18 @@ def predict(data: dict):
         # Predict
         yield_per_hectare = model.predict(scaled)[0]
 
-        # Convert like your CLI output
-        yield_per_acre = yield_per_hectare / 2.471
-        total_yield = yield_per_acre * area
+        # 🔥 SAME AS predict.py
+        yield_per_acre = yield_per_hectare / 2.47105
+        total_yield = yield_per_hectare * area_ha
 
         return {
             "crop": data["crop"],
             "season": data["season"],
             "state": data["state"],
-            "year": year,
-
-            "yield_per_acre_tonnes": round(yield_per_acre, 4),
-            "yield_per_hectare_tonnes": round(yield_per_hectare, 4),
-            "total_yield_tonnes": round(total_yield, 2)
+            "year": crop_year,
+            "yield_per_acre_tonnes": round(float(yield_per_acre), 4),
+            "yield_per_hectare_tonnes": round(float(yield_per_hectare), 4),
+            "total_yield_tonnes": round(float(total_yield), 2)
         }
 
     except Exception as e:
